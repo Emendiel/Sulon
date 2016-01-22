@@ -105,7 +105,7 @@ abstract class AbstractNormalizer extends SerializerAwareNormalizer implements N
     /**
      * Set normalization callbacks.
      *
-     * @param array $callbacks help normalize the result
+     * @param callable[] $callbacks help normalize the result
      *
      * @return self
      *
@@ -192,7 +192,7 @@ abstract class AbstractNormalizer extends SerializerAwareNormalizer implements N
                 return true;
             }
 
-            $context['circular_reference_limit'][$objectHash]++;
+            ++$context['circular_reference_limit'][$objectHash];
         } else {
             $context['circular_reference_limit'][$objectHash] = 1;
         }
@@ -259,7 +259,7 @@ abstract class AbstractNormalizer extends SerializerAwareNormalizer implements N
             }
         }
 
-        return array_unique($allowedAttributes);
+        return $allowedAttributes;
     }
 
     /**
@@ -279,7 +279,9 @@ abstract class AbstractNormalizer extends SerializerAwareNormalizer implements N
      * Instantiates an object using constructor parameters when needed.
      *
      * This method also allows to denormalize data into an existing object if
-     * it is present in the context with the object_to_populate key.
+     * it is present in the context with the object_to_populate. This object
+     * is removed from the context before being returned to avoid side effects
+     * when recursively normalizing an object graph.
      *
      * @param array            $data
      * @param string           $class
@@ -296,9 +298,12 @@ abstract class AbstractNormalizer extends SerializerAwareNormalizer implements N
         if (
             isset($context['object_to_populate']) &&
             is_object($context['object_to_populate']) &&
-            $class === get_class($context['object_to_populate'])
+            $context['object_to_populate'] instanceof $class
         ) {
-            return $context['object_to_populate'];
+            $object = $context['object_to_populate'];
+            unset($context['object_to_populate']);
+
+            return $object;
         }
 
         $constructor = $reflectionClass->getConstructor();
@@ -312,7 +317,15 @@ abstract class AbstractNormalizer extends SerializerAwareNormalizer implements N
 
                 $allowed = $allowedAttributes === false || in_array($paramName, $allowedAttributes);
                 $ignored = in_array($paramName, $this->ignoredAttributes);
-                if ($allowed && !$ignored && array_key_exists($key, $data)) {
+                if (method_exists($constructorParameter, 'isVariadic') && $constructorParameter->isVariadic()) {
+                    if ($allowed && !$ignored && (isset($data[$key]) || array_key_exists($key, $data))) {
+                        if (!is_array($data[$paramName])) {
+                            throw new RuntimeException(sprintf('Cannot create an instance of %s from serialized data because the variadic parameter %s can only accept an array.', $class, $constructorParameter->name));
+                        }
+
+                        $params = array_merge($params, $data[$paramName]);
+                    }
+                } elseif ($allowed && !$ignored && (isset($data[$key]) || array_key_exists($key, $data))) {
                     $params[] = $data[$key];
                     // don't run set for a parameter passed to the constructor
                     unset($data[$key]);
